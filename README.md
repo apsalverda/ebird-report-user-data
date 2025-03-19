@@ -2,6 +2,8 @@ This Quarto file generates an eBird user report in HTML format.
 
 The report includes an interactive Species Accumulation Curve.
 
+Note that the repo includes an example HTML file that was generated with my personal eBird data.
+
 Instructions for generating a report:
 
 1. Download your eBird data [here](https://ebird.org/downloadMyData)
