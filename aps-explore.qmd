@@ -1,0 +1,866 @@
+---
+title: "Personal eBird report"
+author: 
+  - name: "Anne Pier Salverda"
+    orcid: 0009-0002-4021-3193
+    email: apsalverda@gmail.com
+date: "`r Sys.time()`"
+date-format: "MMMM D, YYYY HH:mm:ss"
+format:
+  html:
+    theme: default
+    toc: true
+    toc-title: Sections
+    toc-location: left
+    toc-depth: 2
+    embed-resources: true
+    other-links:
+      - text: download your eBird data
+        icon: download
+        href: https://ebird.org/downloadMyData
+    # link-external-icon: true
+    link-external-newwindow: true
+    # include-in-header:
+    #   - text: |
+    #   <style>
+    #         .reveal p > img {
+    #         margin: 0;
+    #         }
+    #         </style>
+    bibliography: references.bib
+fig-align: left
+standalone: true
+echo: false
+---
+
+```{r setup}
+#| echo: false
+#| include: false
+library(tidyverse)
+library(plotly)
+library(kableExtra)
+library(formattable)
+library(ggiraph)
+
+theme_set(theme_bw(base_size = 14))
+
+mint_green = "#ACFFAC" # spring
+bright_orange = "#FF9900"
+#rich_red = "#8B0A1A"
+sunflower_yellow = "#F2C464"
+frosty_blue = "#56B3FA"
+original_ebird_green = "#2F7742"
+ebird_green = "#70c687"
+ebird_yellow = "#FFD800"
+ebird_red = "#DA1C13"
+
+scale_color_custom = 
+  scale_color_manual(
+    values = c(
+      "#999999", "#E69F00", "#56B4E9", "#009E73",
+      "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+  )
+
+ordinal_date_suffix = function(date_str, year = TRUE, markdown_subscript = FALSE) {
+  date_obj = as.Date(date_str, "%Y-%m-%d")
+  day_suffix = c("st", "nd", "rd", rep("th", 17), "st", "nd", "rd", rep("th", 7), "st")
+  if (markdown_subscript == TRUE){ day_suffix = paste0("^", day_suffix, "^") }
+  formatted_date = paste0(
+    month(date_obj, label = TRUE, abbr = FALSE),
+    " ",
+    day(date_obj), 
+    day_suffix[day(date_obj)],
+    ifelse(year == TRUE, paste0(
+      " ",
+      year(date_obj)
+    ),
+    ""
+    )
+  )
+  return(formatted_date)
+}
+
+# import csv file downloaded by user using "Download My Data" link at
+# https://ebird.org/myebird/
+ebird_csv = read_csv(
+  "MyEBirdData.csv",
+  col_types = cols(
+    `Submission ID` = col_character(),
+    `Common Name` = col_character(),
+    `Scientific Name` = col_character(),
+    `Taxonomic Order` = col_double(),
+    Count = col_character(), #!
+    `State/Province` = col_character(),
+    County = col_character(),
+    `Location ID` = col_character(),
+    Location = col_character(),
+    Latitude = col_double(),
+    Longitude = col_double(),
+    Date = col_date(format = ""),
+    Time = col_time(format = ""),
+    Protocol = col_character(),
+    `Duration (Min)` = col_double(),
+    `All Obs Reported` = col_double(),
+    `Distance Traveled (km)` = col_double(),
+    `Area Covered (ha)` = col_logical(),
+    `Number of Observers` = col_double(),
+    `Breeding Code` = col_character(),
+    `Observation Details` = col_character(),
+    `Checklist Comments` = col_character(),
+    `ML Catalog Numbers` = col_character()
+  ),
+  na = c("")
+)
+# NOTE: parsing issues can be ignored; are due to empty values not being
+#       included in the data when they occur on the "right end":
+#       problems(ebird_csv) %>%
+#       count(expected, actual)
+
+# reorganize and reformat data
+aps =
+  ebird_csv %>%
+  janitor::clean_names() %>%
+  select(submission_id, date, everything()) %>%
+  arrange(date, time) %>%
+  mutate(
+    year = factor(year(date)),
+    month = month(date),
+    day_of_year = yday(date),
+    us_season = case_when(
+      month < 3 | month == 12~ "winter",
+      month < 6 ~ "spring",
+      month < 9 ~ "summer",
+      month < 12 ~ "fall",
+      TRUE ~ NA
+    ),
+    us_season = factor(us_season, levels = c("spring", "summer", "fall", "winter")),
+    month = factor(month(date, label = TRUE)),
+    # convert "X" to -1 so count can be stored as an integer
+    count = as.numeric(ifelse(count == "X", "-1", count))
+  )
+earliest_date = min(ebird_csv$Date)
+latest_date = max(ebird_csv$Date)
+```
+
+<!-- This report was compiled on `r ordinal_date_suffix(Sys.Date())`. -->
+
+You can learn a lot about your birding from all of the data that you
+have contributed to eBird. The analyses in this document use all of your
+personal eBird data to examine your birding activity and the development of
+your bird observation skills.
+
+First, some basic statistics:
+
+You have contributed eBird data since
+**`r year(min(aps$date))`**, when you submitted your first checklist on 
+**`r ordinal_date_suffix(min(aps$date), year = FALSE, markdown = TRUE)`**.
+The first bird that you reported that day was a
+**`r aps %>% slice(1) %>% pull(common_name)`**.
+
+## Time spent birding
+
+How much time do you spend eBirding?
+
+The graph below shows the total duration of your checklists, for each month of
+the year and for each year that you have contributed data to eBird. The current
+month is indicated by a dot.
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| fig-align: center
+#| fig-width: 6
+#| fig-height: 4
+# total monthly checklist duration, by year ####
+min_year = year(min(aps$date))
+max_year = year(max(aps$date))
+year_month_matrix =
+  tibble(year = factor(min_year:max_year)) %>% 
+  expand(
+    year,
+    month = factor(month.abb, ordered = TRUE, levels = month.abb)
+  ) %>% 
+  arrange(year, month)
+monthly_checklist_duration = 
+  aps %>%
+  distinct(submission_id, year, month, duration_min) %>%
+  group_by(year, month) %>%
+  summarize(total_hours = sum(duration_min, na.rm = TRUE) / 60) %>%
+  mutate(alpha_level = ifelse(as.numeric(as.character(year)) == year(latest_date), 1, .4)) %>% 
+  ungroup() %>% 
+  right_join(year_month_matrix, by = c("year", "month")) %>% 
+  arrange(year, month) %>% 
+  mutate(dummy = total_hours) %>%
+  fill(dummy, .direction = "up") %>% 
+  filter(!is.na(dummy)) %>% 
+  select(-dummy) %>% 
+  replace_na(
+    list(
+      total_hours = 0,
+      alpha_level = .4
+    )
+  )
+monthly_checklist_duration %>% 
+  ggplot(aes(x = month, y = total_hours, color = year, group = year, alpha = alpha_level)) +
+  geom_line(
+    size = .75
+  ) +
+  geom_point(aes(
+    x = monthly_checklist_duration %>% tail(1) %>% head(1) %>% pull(month),
+    y = monthly_checklist_duration %>% tail(1) %>% head(1) %>% pull(total_hours))
+  ) +
+  scale_alpha_identity() +
+  scale_x_discrete(
+    labels = c(substr(month.abb, 1, 3)),
+    expand = expansion(mult = c(.0001, .0001))
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(shape = NA, linewidth = 1)
+    )
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, .1))) +
+  scale_color_custom +
+  theme(
+    #    aspect.ratio = 1,
+    panel.grid = element_blank()
+  ) +
+  labs(
+    title = "Total checklist hours",
+    x = "",
+    y = ""
+  )
+```
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| include: FALSE
+aps %>%
+  distinct(submission_id, year, month, duration_min) %>%
+  group_by(year, month) %>%
+  summarize(total_hours = sum(duration_min, na.rm = TRUE) / 60) %>%
+  ggplot(aes(x = month, y = total_hours, fill = year)) +
+  geom_col() +
+  scale_x_discrete(
+    labels = substr(month.abb, 1, 1)
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, NA))
+  ) +
+  facet_wrap(~year) +
+  theme(
+    panel.grid = element_blank()
+  ) +
+  labs(
+    title = "Total checklist hours, by month",
+    x = "",
+    y = "Hours",
+  )
+```
+
+You can see how active you were in each month and throughout each calendar year.
+For instance, the data suggest
+that throughout the years, you tend to spend most of your time birding in **the**
+**`r aps %>% distinct(submission_id, duration_min, date, us_season) %>% filter(!is.na(duration_min)) %>% mutate(year = year(date)) %>% group_by(year, us_season) %>% summarize(total_duration_min = sum(duration_min)) %>% group_by(us_season) %>% summarize(mean_duration_mins = mean(total_duration_min)) %>% filter(mean_duration_mins == max(mean_duration_mins)) %>% pull(us_season) %>% str_to_title()`**.
+
+The data also suggest that your most active birding year was 
+**`r monthly_checklist_duration %>% group_by(year) %>% summarize(total_hours = sum(total_hours)) %>% filter(total_hours == max(total_hours)) %>% tail(1) %>% pull(year)`**
+when your checklists added up to a total of
+**`r monthly_checklist_duration %>% group_by(year) %>% summarize(total_hours = sum(total_hours)) %>% filter(total_hours == max(total_hours)) %>% tail(1) %>% pull(total_hours) %>% round(0)`
+hours**, or an average of 
+**`r monthly_checklist_duration %>% group_by(year) %>% summarize(total_hours = sum(total_hours)) %>% filter(total_hours == max(total_hours)) %>% tail(1) %>% mutate(avg_mins = (total_hours * 60) / 365) %>% pull(avg_mins) %>% round(0)`
+minutes a day.**
+(You may not want to share this information with your family and friends.)
+
+## Species reported
+
+```{r}
+#| echo: FALSE
+#| include: FALSE
+# number of unique species by month by year
+aps %>%
+  distinct(year, month, common_name) %>%
+  count(year, month) %>%
+  ggplot(aes(x = month, y = n, fill = year)) +
+  geom_col() +
+  facet_wrap(~year)
+```
+
+Many birders keep a list of the species of birds that they have seen in the
+calendar year. How many species did you report in total, by each day of the year?
+
+As the year progresses, the total number of species that you have reported
+increases. The graph below shows the total number of species you had reported by
+day of the year, for each year that you contributed data to eBird.  The current
+month is indicated by a dot.
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| fig-align: center
+#| fig-width: 6
+#| fig-height: 5
+# cumulative number of unique species by month by year
+years = seq(year(earliest_date), year(latest_date), 1)
+{
+  cumulative_n_species_by_year =
+    aps %>%
+    distinct(year, month, date, common_name) %>%
+    mutate(seen = TRUE) %>%
+    arrange(date, common_name) %>%
+    pivot_wider(names_from = "common_name", values_from = "seen") %>%
+    mutate(across(where(is.logical), ~replace_na(., FALSE))) %>%
+    group_by(year) %>%
+    mutate(across(where(is.logical), ~(cumsum(.x) > 0))) %>%
+    mutate(cum_n_species_seen = rowSums(across(where(is.logical)), na.rm = TRUE)) %>%
+    select(year, date, month, cum_n_species_seen) %>%
+    ungroup()
+  cumulative_n_species_by_year =
+    cumulative_n_species_by_year %>%
+    bind_rows(
+      tibble(
+        date = as_date(now()),
+        cum_n_species_seen =
+          cumulative_n_species_by_year %>%
+          tail(1) %>%
+          pull(cum_n_species_seen)
+      )
+    ) %>%
+    bind_rows(
+      tibble(
+        date = c(
+          as_date(paste(years, "-01-01")),
+          as_date(paste(years, "-12-31"))
+        ),
+        cum_n_species_seen = c(rep(0, length(years)), rep(NA, length(years)))
+      ) %>%
+        anti_join(
+          cumulative_n_species_by_year, by = "date"
+        )
+    ) %>%
+    arrange(date) %>%
+    mutate(
+      year = factor(year(date)), month = month(date),
+      alpha_level = ifelse(as.numeric(as.character(year)) == year(latest_date), 1, .4)
+    )
+}
+# middle_of_month_in_days_of_year =
+#   tibble(date = as_date("2025-01-01") + (0:364)) %>%
+#   mutate(
+#     yday = yday(date),
+#     mday = mday(date),
+#     month = month(date)
+#   ) %>%
+#   group_by(month) %>%
+#   filter(mday == floor(mean(mday))) %>%
+#   pull(yday)
+first_of_month_in_days_of_year =
+  tibble(date = as_date("2025-01-01") + (0:364)) %>%
+  mutate(yday = yday(date)) %>%
+  group_by(month(date)) %>%
+  filter(yday(date) == min(yday(date))) %>%
+  pull(yday)
+
+# cumulative species by year, one panel ####
+cumulative_n_species_by_year %>%
+  mutate(date = yday(date)) %>%
+  ggplot(aes(x = date, y = cum_n_species_seen, color = year, alpha = alpha_level)) +
+  geom_step(linewidth = .7) +
+  geom_point(aes(
+    x = cumulative_n_species_by_year %>% tail(2) %>% head(1) %>% pull(date) %>% yday(),
+    y = cumulative_n_species_by_year %>% tail(2) %>% head(1) %>% pull(cum_n_species_seen))
+  ) +
+  scale_x_continuous(
+    labels = c(substr(month.abb, 1, 3), "Jan"), # HACK
+    breaks = c(first_of_month_in_days_of_year, 365),
+    expand = expansion(mult = c(.0001, .0001))
+  ) +
+  guides(
+    color = guide_legend(
+      override.aes = list(shape = NA, linewidth = 1)
+    )
+  ) +
+  scale_alpha_identity() +
+  ggsci::scale_color_tron() +
+  scale_color_custom +
+  scale_y_continuous(expand = expansion(mult = c(0, .05))) +
+  labs(
+    title = "Total number of species reported",
+    x = "",
+    y = ""
+  ) +
+  theme(
+    aspect.ratio = 1,
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank(),
+    plot.margin = unit(c(20, 0, 0, 0), "pt")
+  )
+```
+
+You have seen
+**`r cumulative_n_species_by_year %>% tail(2) %>% head(1) %>% pull(cum_n_species_seen)`**
+species so far this year.
+
+Your best species year was
+**`r cumulative_n_species_by_year %>% filter(cum_n_species_seen == max(cum_n_species_seen, na.rm = TRUE)) %>% tail(1) %>% pull(year)`**
+when you saw a total of 
+**`r cumulative_n_species_by_year %>% filter(cum_n_species_seen == max(cum_n_species_seen, na.rm = TRUE)) %>% tail(1) %>% pull(cum_n_species_seen)`**
+species.
+
+Note that you can easily glimpse things such as:
+
+* the total number of unique species you reported in each year
+* the speed with which you accumulated species throughout the year
+
+Both of these are influenced by a variety of factors, such as your birding 
+skills, the amount of time you spend birding, and the number of species present.
+For instance, you might see a steep increase during Spring migration, or during 
+that vacation to South-America that you took in the Fall of last year.
+
+```{r}
+#| echo: FALSE
+#| include: FALSE
+# aps %>%
+#   distinct(year, day_of_year) %>%
+#   expand(year, day_of_year) %>%
+#   left_join(
+#     aps %>%
+#       distinct(year, month, day_of_year, common_name) %>%
+#       mutate(seen = TRUE),
+#     by = c("year", "day_of_year")
+#   ) %>%
+#   arrange(year, day_of_year, common_name) %>%
+#   pivot_wider(names_from = "common_name", values_from = "seen") %>%
+#   mutate_if(is.logical, ~replace_na(., FALSE)) %>%
+#   group_by(year) %>%
+#   mutate_if(is.logical, ~cumsum(.) > 0) %>%
+#   select(-`NA`) %>%
+#   mutate(cum_n_species_seen = rowSums(across(where(is.logical)))) %>%
+#   select(year, day_of_year, month, cum_n_species_seen) %>%
+#   ggplot(aes(x = day_of_year, y = cum_n_species_seen, color = year)) +
+#   geom_step() +
+#   facet_wrap(~year)
+
+
+# cumulative species by year, one panel per year####
+cumulative_n_species_by_year %>%
+  ggplot(aes(x = date, y = cum_n_species_seen, color = year)) +
+  geom_step() +
+  geom_vline(xintercept = latest_date, color = "gray", alpha = .5) +
+  scale_x_date(
+    date_labels = c("J", substr(month.abb, 1, 1)), # HACK
+    date_breaks = "1 month",
+    expand = expansion(mult = c(.005, .005))
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, .1))) +
+  facet_wrap(~year, scales = "free_x") +
+  theme(
+    aspect.ratio = 1,
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(size = rel(.8)),
+    plot.margin = unit(c(0, 0, 0, 0), "pt")
+    #    axis.text.y = element_text(size = rel(.8))
+  ) +
+  labs(
+    x = "",
+    y = "",
+    title = "Cumulative number of species reported"
+  )
+```
+
+{{ <pagebreak> }}
+
+## Observation skills
+
+Using eBird data to assess your bird observation skills is not trivial.
+
+#### Species Accumulation Curve
+
+eBird uses an estimate of each user's bird observation skills called the *Species
+Accumulation Curve* [@kelling2015can]. The total number of species that you
+report for a checklist naturally increases as a function of the time you
+spend looking for birds, independently of your observation skills. However, as you
+become a more experienced birder, your ability to detect birds and your ability
+to identify what species those birds are improves. This should enable you to
+report more species of birds per unit of time.
+
+Each checklist that you submit contributes a data point to the Species 
+Accumulation Curve. Each of those data point represents, for a particular checklist, the
+total number of species you reported and the total amount of time you spent
+birding. A statistical procedure is used to fit a curve to those data,
+which captures the rate at which the number of birds you reported increased 
+as a function of the time spent observing birds. The higher this rate, the
+steeper the curve.
+
+The graph below shows a Species Accumulation Curve for each year that you
+have contributed data to eBird. As you become a better birder, you should expect
+the steepness of the curve to increase, indicating that you reported
+more birds per unit of time. Does the slope of your Species Accumulation Curve
+increase, year over year?
+(You may want to discount this year's curve, since it's based on
+partial data for the year.)
+
+```{r}
+#| echo: FALSE
+#| warning: FALSE
+#| fig-align: center
+#| fig-width: 6
+#| fig-height: 5
+
+aps_count =
+  aps %>%
+  distinct(year, submission_id, duration_min, common_name) %>%
+  filter(!is.na(duration_min)) %>%
+  group_by(submission_id) %>%
+  mutate(n_species = n()) %>%
+  distinct(year, submission_id, duration_min, n_species)
+
+# species accumulation curve by year, one panel ####
+species_accumulation_curve_plot =
+  aps_count %>%
+  left_join(
+    aps %>% distinct(submission_id, location, date),
+    by = "submission_id"
+  ) %>%
+  mutate(
+    my_label = paste(
+      location,
+      "\n",
+      n_species,
+      "species in",
+      duration_min, 
+      "mins, on ", 
+      ordinal_date_suffix(date)
+    )
+  ) %>% 
+  ggplot(aes(x = duration_min, y = n_species, group = year, color = year)) +
+  coord_cartesian(
+    xlim = c(0, NA),
+    ylim = c(0, NA)
+  ) +
+  scale_x_continuous(
+    breaks = seq(0, 300, 60),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_color_custom +
+  geom_smooth(
+    method = "loess",
+    formula = "y ~ x",
+    fill = "gray",
+    se = FALSE,
+    size = .75
+    #    span = 1
+  ) +
+  # # use when using plotly:
+  # geom_point(
+  #   shape = 16,
+  #   alpha = .25,
+  #   aes(text = paste(location, "\n", n_species, "species in", duration_min, "mins"))
+  # ) +
+  geom_point_interactive(
+    shape = 16,
+    alpha = .25,
+    aes(
+      tooltip = my_label,
+      data_id = submission_id,
+      tooltip_fill = year,
+      onclick = sprintf("window.open(\"https://ebird.org/checklist/%s\")", submission_id)
+    ),
+  ) + 
+  guides(
+    color = guide_legend(
+      override.aes = list(shape = NA, alpha = NA, linewidth = 1)
+    )
+  ) +
+  labs(
+    title = "Your species accumulation curve",
+    x = "Duration of checklist (mins)",
+    y = "Number of species reported",
+    color = ""
+  ) +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    #    plot.margin = unit(c(20, 10, 20, 10), "pt") # top, right, bottom, left
+    plot.margin = unit(c(1, 0, 20, 0), "pt") # top, right, bottom, left
+  )
+# using ggiraph:
+p = girafe(
+  ggobj = species_accumulation_curve_plot
+  #   options = list(
+  #   opts_tooltip(use_fill = TRUE),
+  #   opts_sizing(width = .7)
+  # )
+)
+girafe_options(
+  p,
+  options =
+    opts_tooltip(
+      use_fill = TRUE,
+      #    opacity = .65,
+      offx = 10,
+      offy = 0
+      #    use_fill = TRUE,
+      #    css = "color:blue; background-color:red, fill-opacity:.5;"
+      #    tooltip_fill = "white"
+    ),
+  #  opts_hover(css = "stroke:yellow;stroke-width:3px;fill-opacity:0.8;")
+  opts_hover(
+    css = "stroke:black; stroke-width:1px;"
+  ),
+  opts_toolbar(
+    fixed = TRUE,
+    #    position = "bottomright",
+    pngname = "ebird-species-accumulation-curve.png"
+  )
+)
+print(p)
+
+# # using plotly:
+# ggplotly(species_accumulation_curve_plot, tooltip = "text") %>% 
+#   layout(legend = list(x = 1.2, y = .5, xanchor = 'right', yanchor = 'center'))
+```
+
+**Note:** You can move the mouse cursor over the data points in the graph to see
+some details for the associated checklist, including its location, duration, and
+the number of species reported Clicking on a data point will open the 
+checklist in eBird.
+
+Do the data indicate that your bird observation skills have improved?
+
+## Top spots
+
+You probably spend more time birding in some locations than others. Some people
+have a favorite spot that they visit many times a year. The graph below shows
+the 5 spots in which you spent the most time birding, based on the
+all the checklists that you have submitted over the years.
+
+```{r}
+#| echo: FALSE
+total_time =
+  aps %>%
+  filter(!is.na(duration_min)) %>%
+  distinct(location, duration_min) %>%
+  group_by(location) %>%
+  summarize(total_time_mins = sum(duration_min)) %>%
+  arrange(desc(total_time_mins)) %>%
+  mutate(total_time_hours = (total_time_mins / 60) %>% round(1))
+total_time %>%
+  mutate(
+    total_time_mins = color_bar(ebird_green)(total_time$total_time_mins),
+    total_time_hours = color_bar(ebird_green)(total_time$total_time_hours)
+  ) %>%
+  rename(
+    "total time (mins)" = total_time_mins,
+    "total time (hours)" = total_time_hours,
+  ) %>%
+  select(-`total time (mins)`) %>% 
+  slice(1:5) %>% 
+  kbl(escape = F) #%>% 
+#  kable_styling()
+```
+#### Top spot: `r total_time %>% head(1) %>% pull(location)`
+
+```{r}
+#| echo: FALSE
+top_location_info =
+  total_time %>%
+  slice(1) %>% 
+  left_join(aps %>% distinct(location, latitude, longitude), by = "location")
+library(leaflet)
+leaflet() %>%
+  addTiles(
+    urlTemplate = "https://mts1.google.com/vt/lyrs=s&hl=en&src=app&x={x}&y={y}&z={z}&s=G",
+    attribution = "Google"
+  ) %>% 
+  #  addTiles() %>%  # Add default OpenStreetMap map tiles
+  addMarkers(
+    lng = top_location_info$longitude, 
+    lat = top_location_info$latitude, 
+    popup = top_location_info$location
+  )
+```
+
+```{r}
+#| echo: FALSE
+#| include: FALSE
+# day with largest number of new species, by year ####
+largest_number_of_new_species_by_day_by_year =
+  cumulative_n_species_by_year %>%
+  group_by(year) %>%
+  mutate(increase = cum_n_species_seen - lag(cum_n_species_seen)) %>%
+  mutate(increase = ifelse(is.na(increase), 0, increase)) %>%
+  filter(increase == max(increase)) %>%
+  select(year, date, increase) %>%
+  rename(n_new_species = increase) %>%
+  ungroup()
+largest_number_of_new_species_by_day_by_year %>%
+  kable()
+
+# top_10 %>%
+#   mutate(common_name = factor(common_name, levels = rev(unique(common_name)))) %>%
+#   ggplot(aes(x = common_name, y = perc_checklists)) +
+#   geom_col() +
+#   coord_flip() +
+#   scale_y_continuous(
+#     expand = expansion(mult = c(0, 0)),
+#     limits = c(0, 100)
+#   ) +
+#   labs(
+#     title = "Top 10 most frequently seen species",
+#     x = "",
+#     y = "Percentage of checklists with species observation(s)"
+#   ) +
+#   theme(
+#     panel.grid.major = element_blank(),
+#     panel.grid.minor = element_blank()
+#   )
+
+# checklists with largest number of species, by year ####
+aps %>%
+  group_by(submission_id, date, location, duration_min) %>%
+  summarize(n_species = n()) %>%
+  ungroup() %>%
+  arrange(desc(n_species)) %>%
+  mutate(
+    duration_hrs = round(duration_min / 60, 1),
+    year = year(date)
+  ) %>%
+  filter(!is.na(duration_hrs)) %>%
+  select(year, date, location, n_species, duration_hrs) %>%
+  group_by(year) %>%
+  filter(n_species == max(n_species)) %>%
+  ungroup()
+
+# day with largest number of species, by year ####
+aps %>%
+  distinct(date, common_name) %>%
+  count(date, sort = TRUE) %>%
+  rename(n_species_seen = n) %>%
+  mutate(year = year(date)) %>%
+  group_by(year) %>%
+  filter(n_species_seen == max(n_species_seen)) %>%
+  ungroup()
+
+# total checklist time, by year ####
+aps %>%
+  distinct(submission_id, year, duration_min) %>%
+  group_by(year) %>%
+  summarize(total_hours = sum(duration_min, na.rm = TRUE) / yday(Sys.Date()))
+
+### Top 5 species, by season
+aps_species_per_submission =
+  aps %>%
+  filter(protocol != "eBird - Casual Observation") %>%
+  distinct(submission_id, common_name, duration_min, year) %>%
+  group_by(submission_id) %>%
+  summarize(
+    n_species = n(),
+    duration_min = unique(duration_min),
+    year = unique(year)
+  )
+
+species_per_checklist_per_season =
+  aps %>%
+  expand(submission_id, common_name) %>%
+  left_join(
+    aps %>%
+      distinct(submission_id, common_name) %>%
+      mutate(seen = TRUE),
+    by = c("submission_id", "common_name")
+  ) %>%
+  mutate(seen = ifelse(is.na(seen), FALSE, TRUE)) %>%
+  left_join(
+    aps %>%
+      distinct(submission_id, us_season),
+    by = "submission_id"
+  ) %>%
+  group_by(us_season, common_name) %>%
+  summarize(perc_checklists = round(mean(seen) * 100, 0)) %>%
+  arrange(us_season, desc(perc_checklists)) %>%
+  ungroup()
+
+top_species_per_checklist_per_season =
+  species_per_checklist_per_season %>%
+  group_by(us_season) %>%
+  slice(1:3) %>%
+  #  mutate(common_name = paste(row_number(), ". ", common_name)) %>% 
+  mutate(common_name = paste(list("🥇", "🥈", "🥉"), common_name)) %>% 
+  ungroup()
+
+top_species_per_checklist_per_season =
+  top_species_per_checklist_per_season %>% 
+  mutate(perc_checklists = color_bar(ebird_green)(top_species_per_checklist_per_season$perc_checklists)) %>% 
+  rename(
+    "season" = "us_season",
+    "species" = "common_name",
+    "percentage of checklists" = "perc_checklists"
+  ) %>% 
+  kbl(escape = F) %>% 
+  #  kable_styling("responsive") %>% 
+  kable_styling() %>% 
+  collapse_rows(columns = 1, valign = "top")
+```
+
+## Top birds
+
+What are the species that you report most frequently? You probably have a hunch,
+but would you also know what your "top birds" are in each of the four seasons?
+
+The table below shows the percentage of checklists within the season that
+featured a species, and presents the top 3 species for each season. Even if you
+do most of your birding in the same area throughout the year, the species that
+you report most frequently can change quite a bit.
+
+`r top_species_per_checklist_per_season`
+
+```{r}
+#| include: FALSE
+# aps %>%
+#   group_by(year, common_name) %>%
+#   filter(date == min(date)) %>%
+#   ungroup() %>%
+#   distinct(date, common_name) %>%
+#   mutate(
+#     year = factor(year(date)),
+#     year_day = yday(date)
+#   ) %>%
+#   arrange(date) %>%
+#   group_by(year) %>%
+#   mutate(n_species_cum = row_number()) %>%
+#   ggplot(aes(x = year_day, y = n_species_cum, color = year, group = year)) +
+#   geom_line() +
+#   coord_cartesian(xlim = c(0, 365), ylim = c(0, NA)) +
+#   scale_x_continuous(
+#     breaks = seq(0, 350, 50),
+#     expand = expansion(mult = c(0, 0))
+#   ) +
+#   scale_y_continuous(
+#     expand = expansion(mult = c(0, 0))
+#   ) +
+#   labs(
+#     x = "Day of the year",
+#     y = "Cumulative number of species"
+#   ) +
+#   theme(
+#     panel.grid.major = element_blank(),
+#     panel.grid.minor = element_blank()
+#   )
+```
+
+<!-- ## How to download your eBird data -->
+
+<!-- ::: {.callout-note} -->
+<!-- ## Follow these steps -->
+<!-- 1. Navigate to <https://ebird.org/myebird/> -->
+<!-- 2. Make sure that you are logged in -->
+<!-- 3. In the sidebar on the left side of the screen, click "Download My Data" -->
+<!-- ::: -->
